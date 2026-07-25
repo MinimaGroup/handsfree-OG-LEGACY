@@ -288,8 +288,8 @@ function saveSessions(sessions) {
 // SSH) live only as transcripts under ~/.claude/projects. Surface the recent
 // ones in the picker so the phone can take them over directly. Each entry
 // carries the cwd (the registry doesn't know it) and the last-used model, so
-// takeover resumes in the right directory on the right model — a session that
-// fable flagged and switched to opus stays on opus.
+// takeover resumes in the right directory on the right model (agentd remaps
+// legacy pre-Opus-5 models to the current default).
 // ---------------------------------------------------------------------------
 
 // Pull picker metadata out of a transcript without reading the whole file

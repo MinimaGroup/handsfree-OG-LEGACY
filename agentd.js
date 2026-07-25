@@ -348,11 +348,17 @@ async function runTurn(job) {
   const saved = sessionId ? loadSessions().find(s => s.id === sessionId) : null;
   const cwd = (saved && saved.cwd) || job.cwd || WORKDIR;
   // Model: sessions remember theirs (set on takeover or by a fallback switch);
-  // new sessions default to fable. Opus is the fallback because fable flags
-  // some benign conversations — the CLI then switches models mid-turn on its
-  // own and we record the switch so later turns start on Opus directly.
-  const model = (saved && saved.model) || job.model || 'claude-fable-5';
+  // new sessions default to Opus 5 (1M context). Opus 4.8 is the fallback for
+  // overload/refusal — the CLI switches mid-turn on its own and we record the
+  // switch so later turns start on the fallback directly.
+  // Sessions pinned to the pre-Opus-5 default (fable) or fallback (opus-4-8)
+  // are stale pins from the old refusal dance — run them on the new default,
+  // which also rescues 200k-context sessions wedged at "prompt is too long".
+  const DEFAULT_MODEL = 'claude-opus-5';
   const FALLBACK = 'claude-opus-4-8';
+  const LEGACY_MODELS = new Set(['claude-fable-5', 'claude-opus-4-8']);
+  let model = (saved && saved.model) || job.model || DEFAULT_MODEL;
+  if (LEGACY_MODELS.has(model)) model = DEFAULT_MODEL;
   console.log(`runTurn: connId=${job.connId} resume=${requested || 'new session'} cwd=${cwd} model=${model} text="${job.text.slice(0, 60)}"`);
   activeJob = job;
   activeSessionId = sessionId;
@@ -422,8 +428,8 @@ async function runTurn(job) {
         sessionId = m.session_id;
         activeSessionId = sessionId;
         addOrUpdateSession(sessionId, job.text, '', cwd);
-        // Non-default models stick to the session (e.g. a takeover on Opus).
-        if (model !== 'claude-fable-5') setSessionModel(sessionId, model);
+        // Non-default models stick to the session (e.g. a takeover choice).
+        if (model !== DEFAULT_MODEL) setSessionModel(sessionId, model);
         emit({ type: 'sessionStarted', sessionId, connId: job.connId });
       } else if (m.type === 'assistant') {
         const blocks = m.message?.content ?? m.content ?? [];
@@ -437,14 +443,14 @@ async function runTurn(job) {
           } else if (block.type === 'tool_use') {
             emit({ type: 'tool', text: toolSummary(block), connId: job.connId });
           } else if (block.type === 'fallback') {
-            // The CLI switched models mid-turn (fable declined the content).
-            // Say so, and pin the session to the new model so future turns
-            // start there instead of re-tripping the same refusal.
+            // The CLI switched models mid-turn (default declined or was
+            // unavailable). Say so, and pin the session to the new model so
+            // future turns start there instead of re-tripping the same issue.
             const to = block.to?.model || FALLBACK;
             console.log(`Model fallback: ${block.from?.model} -> ${to}`);
             emit({
               type: 'assistant',
-              text: 'Heads up — the default model declined this conversation, so I switched to Opus and will stay on it here.',
+              text: 'Heads up — the default model could not take this turn, so I switched to a backup Opus model for this conversation.',
               connId: job.connId,
             });
             if (sessionId) setSessionModel(sessionId, to);
