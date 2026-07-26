@@ -493,10 +493,12 @@ const server = createServer(loadOrCreateCert(), async (req, res) => {
     const indexHtml = readFileSync(path.join(__dirname, 'public', 'index.html'));
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end(indexHtml);
-  } else if (url.pathname === '/handsfree.apk') {
-    const apkPath = path.join(__dirname, 'public', 'handsfree.apk');
+  } else if (/^\/[a-z0-9._-]+\.apk$/i.test(url.pathname)) {
+    // Serve any APK sitting in public/, e.g. /handsfree.apk or /northmost.apk
+    const name = path.basename(url.pathname);
+    const apkPath = path.join(__dirname, 'public', name);
     if (existsSync(apkPath)) {
-      res.writeHead(200, { 'content-type': 'application/vnd.android.package-archive', 'content-disposition': 'attachment; filename="handsfree.apk"' });
+      res.writeHead(200, { 'content-type': 'application/vnd.android.package-archive', 'content-disposition': `attachment; filename="${name}"` });
       res.end(readFileSync(apkPath));
     } else {
       res.writeHead(404).end('APK not found');

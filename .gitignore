@@ -6,7 +6,7 @@ certs/
 .session
 .usage.json
 android/app/build/
-public/handsfree.apk
+public/*.apk
 .run.lock
 .agentd.log
 .agentd.pid
