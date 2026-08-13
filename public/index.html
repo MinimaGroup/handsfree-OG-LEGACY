@@ -113,12 +113,16 @@
   #navbar button { flex: 1; background: var(--panel); color: var(--dim); border: none; padding: 12px 8px; font-size: 14px; cursor: pointer; border-bottom: 2px solid transparent; }
   #navbar button.active { color: var(--accent); border-bottom-color: var(--accent); }
   #navbar button:not(.active):hover { color: var(--text); }
+  #voiceBtn { padding: 5px 9px; line-height: 0; flex: none; }
+  #voiceBtn.off { color: var(--dim); }
+  #voiceBtn svg { display: block; fill: currentColor; }
 </style>
 </head>
 <body>
 <header>
   <div id="dot"></div>
   <div id="workdir">connecting…</div>
+  <button id="voiceBtn" title="Speak replies out loud"></button>
   <a id="apkBtn" href="handsfree.apk" download style="display:none;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:13px;text-decoration:none;">📱 APK</a>
 </header>
 
@@ -166,6 +170,10 @@ const micBtn = document.getElementById('mic');
 const stopBtn = document.getElementById('stop');
 const lockHint = document.getElementById('lockHint');
 const textInput = document.getElementById('textInput');
+const voiceBtn = document.getElementById('voiceBtn');
+
+// Voice playback is optional: with it off the app is a plain text chat.
+let voiceOn = localStorage.getItem('handsfree_voice') !== 'off';
 
 let ws = null;
 let listening = false;
@@ -1324,6 +1332,7 @@ const tts = {
   enqueue(item) {
     // item can be { text, audio } for server audio or { text } for TTS
     if (!item.text && !item.audio) return;
+    if (!voiceOn) return;  // text-only mode: replies stay on screen
 
     // Skip duplicates
     const key = item.audio ? 'audio:' + item.text : item.text;
@@ -1340,15 +1349,17 @@ const tts = {
     }
   },
 
-  // Play next item in queue
+  // Play next item in queue.
+  // Playback never opens the mic on its own. It used to, so barge-in worked
+  // in any mode, but in a noisy room the background chatter tripped the VAD
+  // and cut off every reply. The mic now only opens when the user asks for
+  // it (hold the mic button, or lock hands-free); tap stop to interrupt.
   playNext() {
     if (this.queue.length === 0) {
       this.speaking = false;
       this.currentAudio = null;
       if (!agentBusy) setState('idle');
       if (handsFree && !listening && !agentBusy) startListening();
-      // Playback-only listening (barge-in outside hands-free) ends with playback
-      else if (!handsFree && listening && !micHold) stopListening();
       return;
     }
 
@@ -1369,21 +1380,12 @@ const tts = {
       }
     };
 
-    // Start VAD during playback so barge-in works in any mode — but hidden
-    // pages (e.g. a background browser tab) keep their mic off, or every
-    // open client would transcribe and submit the same speech. Hands-free
-    // is exempt: the phone runs it from the background via the service.
-    if (!listening && (handsFree || !document.hidden)) {
-      if (vadReady) {
-        // Opening the mic re-routes Android audio and swallows the start
-        // of anything already playing (hands-free never hits this: its
-        // mic is open before playback begins). Bring the mic up first,
-        // give the route a moment to settle, then speak.
-        startListening().then(() => setTimeout(begin, 250)).catch(() => begin());
-        return;
-      }
-      // VAD still loading: init in the background, don't hold the reply.
-      startListening();
+    // Hands-free re-arms its mic a beat after each transcription, which can
+    // land mid-reply — and opening the mic re-routes Android audio, swallowing
+    // whatever is playing. Bring it up first, let the route settle, then speak.
+    if (handsFree && !listening && vadReady) {
+      startListening().then(() => setTimeout(begin, 250)).catch(() => begin());
+      return;
     }
     begin();
   },
@@ -1536,6 +1538,21 @@ function setHandsFree(on) {
   if (on) { if (!listening) startListening(); }
   else stopListening();
 }
+
+// Voice playback toggle (persisted). Off turns the app into a plain text
+// chat: replies are never spoken, so nothing needs interrupting.
+const SPEAKER_ON = '<svg width="20" height="20" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
+const SPEAKER_OFF = '<svg width="20" height="20" viewBox="0 0 24 24"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>';
+function setVoice(on) {
+  voiceOn = on;
+  localStorage.setItem('handsfree_voice', on ? 'on' : 'off');
+  voiceBtn.classList.toggle('off', !on);
+  voiceBtn.innerHTML = on ? SPEAKER_ON : SPEAKER_OFF;
+  voiceBtn.title = on ? 'Replies are spoken aloud' : 'Replies are silent';
+  if (!on) tts.stop();
+}
+voiceBtn.onclick = () => setVoice(!voiceOn);
+setVoice(voiceOn);
 
 const LOCK_DIST = 70; // px to slide up before hands-free locks
 let micHold = null;   // { startY, startT, wasListening } while pointer is down
