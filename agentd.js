@@ -348,15 +348,17 @@ async function runTurn(job) {
   const saved = sessionId ? loadSessions().find(s => s.id === sessionId) : null;
   const cwd = (saved && saved.cwd) || job.cwd || WORKDIR;
   // Model: sessions remember theirs (set on takeover or by a fallback switch);
-  // new sessions default to Opus 5 (1M context). Opus 4.8 is the fallback for
+  // new sessions default to Opus 5. Opus 4.8 is the fallback for
   // overload/refusal — the CLI switches mid-turn on its own and we record the
   // switch so later turns start on the fallback directly.
-  // Sessions pinned to the pre-Opus-5 default (fable) or fallback (opus-4-8)
-  // are stale pins from the old refusal dance — run them on the new default,
-  // which also rescues 200k-context sessions wedged at "prompt is too long".
-  const DEFAULT_MODEL = 'claude-opus-5';
-  const FALLBACK = 'claude-opus-4-8';
-  const LEGACY_MODELS = new Set(['claude-fable-5', 'claude-opus-4-8']);
+  // The "[1m]" suffix is what actually buys the 1M context window; a bare
+  // model name gets the 200k default, which auto-compacted around 155k —
+  // every few minutes once the post-compact summary already cost ~90k.
+  // Sessions pinned to a bare or pre-Opus-5 model name are stale pins; run
+  // them on the new default so they get the big window too.
+  const DEFAULT_MODEL = 'claude-opus-5[1m]';
+  const FALLBACK = 'claude-opus-4-8[1m]';
+  const LEGACY_MODELS = new Set(['claude-fable-5', 'claude-opus-4-8', 'claude-opus-5']);
   let model = (saved && saved.model) || job.model || DEFAULT_MODEL;
   if (LEGACY_MODELS.has(model)) model = DEFAULT_MODEL;
   console.log(`runTurn: connId=${job.connId} resume=${requested || 'new session'} cwd=${cwd} model=${model} text="${job.text.slice(0, 60)}"`);
