@@ -118,6 +118,16 @@ const USAGE_FILE = path.join(__dirname, '.usage.json');
 const LOCAL_WHISPER_URL = process.env.WHISPER_URL || 'http://127.0.0.1:9876/transcribe';
 // Local TTS server (Piper) - falls back to browser speech synthesis if unavailable
 const LOCAL_TTS_URL = process.env.TTS_URL || 'http://127.0.0.1:9877/synthesize';
+// Kokoro picks its voice per request, so the name lives in a file the agent can
+// rewrite mid-conversation — changing it used to mean restarting the TTS service
+// and waiting out a model warmup. Read fresh each time so the next reply speaks
+// in the new voice. Piper ignores the field.
+const VOICE_FILE = path.join(__dirname, '.voice');
+const DEFAULT_VOICE = 'af_heart';
+function currentVoice() {
+  try { return readFileSync(VOICE_FILE, 'utf8').trim() || DEFAULT_VOICE; }
+  catch { return DEFAULT_VOICE; }
+}
 
 // Prepend a short silence to a PCM WAV. Piper's audio starts speaking at
 // sample zero, and phones swallow the first fraction of a second while the
@@ -161,7 +171,7 @@ async function synthesizeSpeech(text) {
     const res = await fetch(LOCAL_TTS_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, voice: currentVoice() }),
       signal: controller.signal,
     });
     clearTimeout(timeout);

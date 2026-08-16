@@ -10,3 +10,4 @@ public/*.apk
 .run.lock
 .agentd.log
 .agentd.pid
+.voice
