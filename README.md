@@ -78,7 +78,19 @@ append that keeps spoken replies short and conversational.
 | Role | Local server | Fallback |
 | --- | --- | --- |
 | Transcription (Whisper) | `WHISPER_URL` (default `http://127.0.0.1:9876/transcribe`), e.g. [faster-whisper](https://github.com/SYSTRAN/faster-whisper) behind a tiny HTTP wrapper | OpenAI Whisper API if `OPENAI_API_KEY` is set; otherwise use the text box |
-| Speech synthesis | `TTS_URL` (default `http://127.0.0.1:9877/synthesize`), e.g. [Piper](https://github.com/rhasspy/piper) — POST `{"text": ...}`, returns a WAV | The browser/phone's built-in text-to-speech |
+| Speech synthesis | `TTS_URL` (default `http://127.0.0.1:9877/synthesize`), e.g. [Piper](https://github.com/rhasspy/piper) or [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) — POST `{"text": ..., "voice": ...}`, returns a WAV | The browser/phone's built-in text-to-speech |
+
+Any server matching that shape works, so the engine is chosen by pointing
+`TTS_URL` at whichever one is running. Piper is a single-voice process (the
+model is fixed at load time and the `voice` field is ignored); Kokoro takes a
+voice name per request, which is what makes mid-conversation switching
+possible.
+
+The voice name is read from a `.voice` file (git-ignored, default `af_heart`)
+on **every** synthesis, so writing a new name into it changes the very next
+spoken reply — no restart, no model reload. An unknown name makes the TTS
+server return an error, and that one reply falls back to the phone's built-in
+speech rather than failing outright.
 
 Voice activity detection runs in the page itself
 ([Silero VAD](https://github.com/snakers4/silero-vad) via
@@ -122,6 +134,7 @@ the APK on the phone; server changes take effect immediately.
 | Port | `PORT` env var (default 8443) |
 | Local Whisper | `WHISPER_URL` env var (default `http://127.0.0.1:9876/transcribe`) |
 | Local TTS | `TTS_URL` env var (default `http://127.0.0.1:9877/synthesize`) |
+| Spoken voice | `.voice` file in the repo root (default `af_heart`), re-read per reply |
 | Agent daemon address | `AGENTD_URL` env var (default `ws://127.0.0.1:9878`) |
 
 ## Off your home network

@@ -50,6 +50,33 @@ This ensures the APK and server are always in sync. When the app connects, if it
 
 Simply restarting the server is NOT enough for HTML changes to take effect in the app.
 
+## TTS: two engines, and how to change the voice
+
+Two speech servers run side by side as systemd user services, and the web
+server talks to whichever one `TTS_URL` points at:
+
+- `tts-server.service` — Piper on :9877, one voice fixed at load
+  (`/research/minima/tts-server/server.py`, currently en_GB-jenny_dioco).
+- `kokoro-tts.service` — Kokoro on :9879, takes a voice name per request
+  (`/research/minima/kokoro-tts-server/server.py`), 22 voices cached.
+
+`TTS_URL` is NOT in `.env` — it's a systemd drop-in at
+`~/.config/systemd/user/handsfree.service.d/tts.conf`, currently pointing at
+Kokoro. Switching engines means editing that file, and the reload needs a
+`handsfree` service restart, which kills agentd and you — so make it the very
+last action of a turn, detached, the way deploy.sh does it.
+
+To change the VOICE, do NOT restart anything: write the name into `.voice` in
+the repo root. server.js re-reads it on every synthesis, so the next reply
+speaks in the new voice. Kokoro names are `af_`/`am_` for American female/male
+and `bf_`/`bm_` for British; `af_heart` is the default and highest quality.
+A bad name returns a 500 and that one reply falls back to phone TTS.
+
+Don't trust the config files to say what's actually speaking — on 2026-08-16 I
+told the user the voice was Piper's Jenny by reading the old server.py, while
+Kokoro's Emma was in fact doing the talking. Check the listening port and the
+service env first.
+
 ## Server process management — READ BEFORE RESTARTING ANYTHING
 
 Two processes, both supervised by `run.sh` (single instance via `.run.lock`).
