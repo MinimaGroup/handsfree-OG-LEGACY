@@ -72,6 +72,14 @@ speaks in the new voice. Kokoro names are `af_`/`am_` for American female/male
 and `bf_`/`bm_` for British; `af_heart` is the default and highest quality.
 A bad name returns a 500 and that one reply falls back to phone TTS.
 
+Voices can be BLENDED by listing several. `af_heart,bf_emma` averages the
+embeddings equally — that's kokoro's own `load_voice`. Weights are an addition
+to our server (`resolve_voice` in the kokoro server.py):
+`af_heart:0.6,bf_emma:0.4` normalizes the weights and sums, so they need not
+add to 1. Weights summing to zero raise, which surfaces as a 500. Editing that
+file DOES need `systemctl --user restart kokoro-tts.service` (~25s warmup);
+that service is separate from handsfree, so restarting it will not kill you.
+
 Don't trust the config files to say what's actually speaking — on 2026-08-16 I
 told the user the voice was Piper's Jenny by reading the old server.py, while
 Kokoro's Emma was in fact doing the talking. Check the listening port and the

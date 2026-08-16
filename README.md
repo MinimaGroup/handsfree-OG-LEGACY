@@ -92,6 +92,10 @@ spoken reply — no restart, no model reload. An unknown name makes the TTS
 server return an error, and that one reply falls back to the phone's built-in
 speech rather than failing outright.
 
+With Kokoro the file may also name a blend: `af_heart,bf_emma` averages two
+voice embeddings, and `af_heart:0.6,bf_emma:0.4` weights the mix (weights are
+normalized, so they need not sum to 1).
+
 Voice activity detection runs in the page itself
 ([Silero VAD](https://github.com/snakers4/silero-vad) via
 [vad-web](https://github.com/ricky0123/vad), loaded from a CDN), so nothing
