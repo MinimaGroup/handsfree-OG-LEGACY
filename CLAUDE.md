@@ -73,7 +73,18 @@ server talks to whichever one `TTS_URL` points at:
 - `tts-server.service` — Piper on :9877, one voice fixed at load
   (`/research/minima/tts-server/server.py`, currently en_GB-jenny_dioco).
 - `kokoro-tts.service` — Kokoro on :9879, takes a voice name per request
-  (`/research/minima/kokoro-tts-server/server.py`), 22 voices cached.
+  (`/research/minima/kokoro-tts-server/server.py`), 22 voices cached. Runs on
+  the RTX 3070: ~0.11s for a sentence that took 1.28s on CPU, ~1GB VRAM,
+  2s startup instead of 25s.
+
+Kokoro's venv (`~/kokoro-venv`) needs the CUDA build of torch —
+`torch==2.13.0+cu130` from the pytorch cu130 index, matching driver 580's
+CUDA 13. Do NOT let it revert to `+cpu`. The box also has a Quadro P1000
+(SM 6.1), and cuDNN refuses to initialise if ANY visible device is older than
+SM 7.5, so server.py sets `CUDA_VISIBLE_DEVICES=0` before importing torch.
+Pinning `cuda:0` alone is not enough — without hiding the P1000 the service
+crash-loops on "cuDNN version 92000 is not compatible with devices with
+SM < 7.5".
 
 `TTS_URL` is NOT in `.env` — it's a systemd drop-in at
 `~/.config/systemd/user/handsfree.service.d/tts.conf`, currently pointing at
@@ -92,7 +103,7 @@ embeddings equally — that's kokoro's own `load_voice`. Weights are an addition
 to our server (`resolve_voice` in the kokoro server.py):
 `af_heart:0.6,bf_emma:0.4` normalizes the weights and sums, so they need not
 add to 1. Weights summing to zero raise, which surfaces as a 500. Editing that
-file DOES need `systemctl --user restart kokoro-tts.service` (~25s warmup);
+file DOES need `systemctl --user restart kokoro-tts.service` (~2s warmup);
 that service is separate from handsfree, so restarting it will not kill you.
 
 Don't trust the config files to say what's actually speaking — on 2026-08-16 I
