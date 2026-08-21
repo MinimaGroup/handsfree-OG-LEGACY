@@ -119,6 +119,7 @@
 <header>
   <div id="dot"></div>
   <div id="workdir">connecting…</div>
+  <button id="locBtn" title="Location off" style="background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:13px;opacity:0.45;">📍</button>
   <a id="apkBtn" href="handsfree.apk" download style="display:none;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:13px;text-decoration:none;">📱 APK</a>
 </header>
 
@@ -977,6 +978,51 @@ function connect() {
 startup();
 
 
+// ---------------- Location sharing ----------------
+// Off until switched on, and remembered. While on, the newest GPS fix rides
+// along with each message so the agent knows where the phone is; it is never
+// stored, only appended to that turn's prompt. Android's permission prompt is
+// raised by Capacitor the first time watchPosition runs.
+let shareLocation = localStorage.getItem('handsfree_share_location') === '1';
+let lastFix = null;
+let locWatchId = null;
+
+function updateLocBtn() {
+  const btn = document.getElementById('locBtn');
+  if (!btn) return;
+  btn.style.opacity = shareLocation ? '1' : '0.45';
+  btn.textContent = shareLocation && !lastFix ? '📍…' : '📍';
+  btn.title = !shareLocation ? 'Location off'
+    : lastFix ? 'Sharing location' : 'Waiting for a GPS fix';
+}
+
+function startLocationWatch() {
+  if (locWatchId != null || !navigator.geolocation) return;
+  locWatchId = navigator.geolocation.watchPosition(
+    (pos) => { lastFix = pos; updateLocBtn(); },
+    (err) => { dbg('[LOC] ' + err.message); lastFix = null; updateLocBtn(); },
+    { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
+  );
+}
+
+function stopLocationWatch() {
+  if (locWatchId != null && navigator.geolocation) navigator.geolocation.clearWatch(locWatchId);
+  locWatchId = null;
+  lastFix = null;
+}
+
+// Speed and heading come free from the GPS while moving; both are absent or
+// negative when stationary, so drop them rather than reporting nonsense.
+function locationPayload() {
+  if (!shareLocation || !lastFix) return undefined;
+  const c = lastFix.coords;
+  const out = { lat: +c.latitude.toFixed(5), lon: +c.longitude.toFixed(5) };
+  if (c.accuracy != null) out.accuracy = Math.round(c.accuracy);
+  if (c.speed != null && c.speed >= 0) out.speed = Math.round(c.speed * 2.23694);
+  if (c.heading != null && !isNaN(c.heading)) out.heading = Math.round(c.heading);
+  return out;
+}
+
 function sendUser(text, fromVoice) {
   text = text.trim();
   if (!text || !ws || ws.readyState !== 1) return;
@@ -989,7 +1035,7 @@ function sendUser(text, fromVoice) {
   // of the lock is that the phone is out of reach and answers come out loud.
   speakReplies = !!fromVoice || handsFree;
   const el = add('user', text);
-  ws.send(JSON.stringify({ type: 'user', text }));
+  ws.send(JSON.stringify({ type: 'user', text, loc: locationPayload() }));
   if (agentBusy) {
     // Agent is mid-turn: this message is queued — dim it and pin it at the
     // bottom.
@@ -1536,6 +1582,15 @@ let lastReply = '';
 // Legacy wrappers - all TTS now goes through unified tts object
 function speak(text) { tts.speakFull(text); }
 function speakBrief(text) { tts.speakBrief(text); }
+
+document.getElementById('locBtn').onclick = () => {
+  shareLocation = !shareLocation;
+  localStorage.setItem('handsfree_share_location', shareLocation ? '1' : '0');
+  if (shareLocation) startLocationWatch(); else stopLocationWatch();
+  updateLocBtn();
+};
+if (shareLocation) startLocationWatch();
+updateLocBtn();
 
 // ---------------- Controls ----------------
 // Mic gestures: hold to talk (release stops), slide up to the lock to engage

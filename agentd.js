@@ -367,8 +367,19 @@ async function runTurn(job) {
   // Keep a short tail of the Claude Code subprocess's stderr so a crash
   // ("process exited with code 1") leaves its reason in our log.
   const stderrTail = [];
+  // The phone's GPS fix, when sharing is on, is appended to the prompt rather
+  // than mixed into the spoken text — it must not reach the session title or
+  // the duplicate check, which both work off job.text.
+  let prompt = job.text;
+  if (job.loc) {
+    const bits = [`${job.loc.lat}, ${job.loc.lon}`];
+    if (job.loc.accuracy != null) bits.push(`within ${job.loc.accuracy}m`);
+    if (job.loc.speed != null) bits.push(`${job.loc.speed} mph`);
+    if (job.loc.heading != null) bits.push(`heading ${job.loc.heading} degrees`);
+    prompt += `\n\n[Phone location right now: ${bits.join(', ')}]`;
+  }
   active = query({
-    prompt: job.text,
+    prompt,
     options: {
       cwd,
       model,
@@ -523,7 +534,7 @@ wss.on('connection', (ws) => {
         emit({ type: 'dropped', text: msg.text.trim(), connId: msg.connId, busy: !!active });
         return;
       }
-      const job = { text: msg.text.trim(), sessionId: msg.sessionId || null, cwd: msg.cwd || null, model: msg.model || null, connId: msg.connId };
+      const job = { text: msg.text.trim(), loc: msg.loc || null, sessionId: msg.sessionId || null, cwd: msg.cwd || null, model: msg.model || null, connId: msg.connId };
       if (active) {
         queue.push(job);
         // Log arrivals: without this the queue is invisible in the log until

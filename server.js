@@ -129,6 +129,26 @@ function currentVoice() {
   catch { return DEFAULT_VOICE; }
 }
 
+// A GPS fix from the phone, if the location toggle is on. It ends up inside a
+// prompt, so nothing gets through that isn't a plausible number.
+function cleanLoc(loc) {
+  if (!loc || typeof loc !== 'object') return null;
+  const lat = Number(loc.lat), lon = Number(loc.lon);
+  if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  const out = { lat, lon };
+  const bounded = (v, max) => {
+    const n = Number(v);
+    return isFinite(n) && n >= 0 && n <= max ? Math.round(n) : null;
+  };
+  const accuracy = bounded(loc.accuracy, 100000);
+  const speed = bounded(loc.speed, 500);
+  const heading = bounded(loc.heading, 360);
+  if (accuracy != null) out.accuracy = accuracy;
+  if (speed != null) out.speed = speed;
+  if (heading != null) out.heading = heading;
+  return out;
+}
+
 // Split a reply into speakable chunks. Synthesis cost scales with length, so
 // rendering a whole paragraph before sending anything meant up to 14s of
 // silence on Kokoro. Chunking lets playback start after the first sentence
@@ -839,7 +859,7 @@ wss.on('connection', (ws, req) => {
       if (!agentWs || agentWs.readyState !== WebSocket.OPEN) {
         send({ type: 'status', text: 'agent is restarting — your message is queued' });
       }
-      sendToAgent({ type: 'user', text, sessionId: conn.sessionId, cwd: conn.cwd, model: conn.model, connId });
+      sendToAgent({ type: 'user', text, loc: cleanLoc(msg.loc), sessionId: conn.sessionId, cwd: conn.cwd, model: conn.model, connId });
     } else if (msg.type === 'vad_debug') {
       // Log VAD debug info for analyzing false triggers
       console.log(`[VAD] energy=${msg.energy.toFixed(4)} max=${msg.maxSample.toFixed(4)} samples=${msg.samples} playback=${msg.duringPlayback}`);
