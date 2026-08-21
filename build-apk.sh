@@ -25,6 +25,11 @@ sed -i "s/const APP_VERSION = '[^']*';/const APP_VERSION = '$GIT_SHA';/" public/
 cp public/index.html android/app/src/main/assets/public/index.html
 git checkout -- public/index.html
 
+# Capacitor's webDir is public/, which is also where the built APK lands, so a
+# `cap sync` copies the APK into the app's own assets and every later build
+# ships a stale copy of itself. That was 103MB of a 79MB download.
+rm -f android/app/src/main/assets/public/*.apk
+
 # Build the APK
 cd android
 ./gradlew assembleDebug

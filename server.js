@@ -134,7 +134,7 @@ function currentVoice() {
 // silence on Kokoro. Chunking lets playback start after the first sentence
 // while the rest renders behind it. The first chunk is kept short on purpose:
 // it is the only one the user actually waits on.
-function chunkForSpeech(text, firstLimit = 90, restLimit = 240) {
+function chunkForSpeech(text, firstLimit = 60, restLimit = 240) {
   const chunks = [];
   let cur = '';
   for (const s of text.split(/(?<=[.!?])\s+/)) {
@@ -180,8 +180,10 @@ function padWavStart(buf, ms = 300) {
   }
 }
 
-// Synthesize text to speech using local Piper server
-async function synthesizeSpeech(text) {
+// Synthesize text to speech using the local TTS server. `pad` prepends the
+// wake-up silence, which only the first chunk of a reply needs — padding every
+// chunk put 300ms of dead air into each gap between sentences.
+async function synthesizeSpeech(text, pad = true) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30000);
@@ -194,8 +196,8 @@ async function synthesizeSpeech(text) {
     clearTimeout(timeout);
     if (!res.ok) throw new Error(`TTS server returned ${res.status}`);
     const audioBuffer = await res.arrayBuffer();
-    const padded = padWavStart(Buffer.from(audioBuffer));
-    return { audio: padded.toString('base64'), source: 'local' };
+    const buf = Buffer.from(audioBuffer);
+    return { audio: (pad ? padWavStart(buf) : buf).toString('base64'), source: 'local' };
   } catch (err) {
     console.log('Local TTS unavailable:', err.message);
     return null; // Client will fall back to browser speech synthesis
@@ -668,7 +670,7 @@ async function handleAgentEvent(evt) {
     console.log(`Synthesizing ${chunks.length} chunk(s) for:`, evt.text.slice(0, 50));
     for (let i = 0; i < chunks.length; i++) {
       const started = Date.now();
-      const tts = await synthesizeSpeech(chunks[i]);
+      const tts = await synthesizeSpeech(chunks[i], i === 0);
       console.log(`  chunk ${i + 1}/${chunks.length} ${Date.now() - started}ms`,
         tts ? `${tts.audio.length} bytes` : 'no audio (client falls back)');
       broadcast({ type: 'say', gen, seq: i, text: chunks[i], audio: tts ? tts.audio : undefined });
