@@ -3,7 +3,7 @@
 // messages to the Claude Agent SDK over WebSocket.
 
 import { createServer } from 'node:https';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, unlinkSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, unlinkSync, readdirSync, statSync, openSync, readSync, closeSync, createReadStream } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { networkInterfaces, homedir, hostname } from 'node:os';
 import { randomBytes } from 'node:crypto';
@@ -524,12 +524,43 @@ const server = createServer(loadOrCreateCert(), async (req, res) => {
     // Serve any APK sitting in public/, e.g. /handsfree.apk or /northmost.apk
     const name = path.basename(url.pathname);
     const apkPath = path.join(__dirname, 'public', name);
-    if (existsSync(apkPath)) {
-      res.writeHead(200, { 'content-type': 'application/vnd.android.package-archive', 'content-disposition': `attachment; filename="${name}"` });
-      res.end(readFileSync(apkPath));
-    } else {
+    if (!existsSync(apkPath)) {
       res.writeHead(404).end('APK not found');
+      return;
     }
+    // The APK is ~78MB. Buffering it with readFileSync sent it without a
+    // Content-Length (chunked), which left Android's installer sitting on
+    // "Downloading update" with no progress, and a body truncated by any
+    // network blip installs as "App not installed". Stream it with a real
+    // length, and honour Range so a dropped download resumes instead of
+    // starting over.
+    const size = statSync(apkPath).size;
+    const headers = {
+      'content-type': 'application/vnd.android.package-archive',
+      'content-disposition': `attachment; filename="${name}"`,
+      'accept-ranges': 'bytes',
+      'cache-control': 'no-store',
+    };
+    let start = 0, end = size - 1, status = 200;
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+    if (range) {
+      start = range[1] ? parseInt(range[1], 10) : 0;
+      end = range[2] ? parseInt(range[2], 10) : size - 1;
+      if (!(start <= end && end < size)) {
+        res.writeHead(416, { 'content-range': `bytes */${size}` }).end();
+        return;
+      }
+      status = 206;
+      headers['content-range'] = `bytes ${start}-${end}/${size}`;
+    }
+    headers['content-length'] = end - start + 1;
+    res.writeHead(status, headers);
+    console.log(`APK ${name}: sending bytes ${start}-${end} of ${size}`);
+    if (req.method === 'HEAD') { res.end(); return; }
+    const stream = createReadStream(apkPath, { start, end });
+    stream.on('error', (err) => { console.log('APK stream error:', err.message); res.destroy(); });
+    res.on('close', () => stream.destroy());
+    stream.pipe(res);
   } else if (url.pathname === '/sessions' && req.method === 'GET') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(listAllSessions()));
