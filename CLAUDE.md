@@ -50,6 +50,21 @@ This ensures the APK and server are always in sync. When the app connects, if it
 
 Simply restarting the server is NOT enough for HTML changes to take effect in the app.
 
+### If the APK is huge, it's one of these two (2026-08-21: 79MB -> 3.9MB)
+
+1. Capacitor's `webDir` is `public/`, which is also where the built APK lands,
+   so a `cap sync` copies handsfree.apk into `android/app/src/main/assets/`
+   and every later build ships a stale copy of itself. build-apk.sh now `rm`s
+   those, and `android/.gitignore` hides the whole assets dir, so nothing in
+   git tells you it's there — check `unzip -l` on the APK.
+2. Gradle's packager updates the output APK in place, so deleting a large
+   asset leaves a hole: entries totalled 3.8MB while the file stayed 75MB.
+   `./gradlew clean` before building reclaims it. Only needed after removing
+   something big; a normal build doesn't require it.
+
+Sanity check a suspicious build with `unzip -l public/handsfree.apk | tail -1`
+and compare that total against the file size on disk.
+
 ## TTS: two engines, and how to change the voice
 
 Two speech servers run side by side as systemd user services, and the web
