@@ -9,6 +9,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
+import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.SslErrorHandler;
@@ -35,6 +36,9 @@ import javax.net.ssl.X509TrustManager;
 public class MainActivity extends BridgeActivity implements TextToSpeech.OnInitListener {
 
     private static final int MIC_PERMISSION_REQUEST = 1001;
+    private static final int GEO_PERMISSION_REQUEST = 1002;
+    private String pendingGeoOrigin;
+    private GeolocationPermissions.Callback pendingGeoCallback;
     private TextToSpeech tts;
     private boolean ttsReady = false;
     private WebView webView;
@@ -60,6 +64,24 @@ public class MainActivity extends BridgeActivity implements TextToSpeech.OnInitL
         tryInjectBridge();
     }
 
+    private boolean hasLocationPermission() {
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                        == PackageManager.PERMISSION_GRANTED
+                || ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+                        == PackageManager.PERMISSION_GRANTED;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == GEO_PERMISSION_REQUEST && pendingGeoCallback != null) {
+            // The page is still blocked waiting on this; answer it either way.
+            pendingGeoCallback.invoke(pendingGeoOrigin, hasLocationPermission(), false);
+            pendingGeoCallback = null;
+            pendingGeoOrigin = null;
+        }
+    }
+
     private void tryInjectBridge() {
         if (bridgeInjected) return;
 
@@ -78,11 +100,31 @@ public class MainActivity extends BridgeActivity implements TextToSpeech.OnInitL
                     }
                 });
 
-                // Handle WebView permission requests (for getUserMedia)
+                // Handle WebView permission requests (for getUserMedia).
+                // NOTE: this replaces Capacitor's own chrome client, so anything
+                // Capacitor handled there has to be handled here too. The base
+                // class denies geolocation silently — the page just gets "User
+                // denied Geolocation" and no prompt is ever shown.
                 webView.setWebChromeClient(new WebChromeClient() {
                     @Override
                     public void onPermissionRequest(final PermissionRequest request) {
                         runOnUiThread(() -> request.grant(request.getResources()));
+                    }
+
+                    @Override
+                    public void onGeolocationPermissionsShowPrompt(String origin,
+                            GeolocationPermissions.Callback callback) {
+                        if (hasLocationPermission()) {
+                            callback.invoke(origin, true, false);
+                            return;
+                        }
+                        // Ask Android once, then answer the page in the result.
+                        pendingGeoOrigin = origin;
+                        pendingGeoCallback = callback;
+                        ActivityCompat.requestPermissions(MainActivity.this,
+                                new String[]{Manifest.permission.ACCESS_FINE_LOCATION,
+                                        Manifest.permission.ACCESS_COARSE_LOCATION},
+                                GEO_PERMISSION_REQUEST);
                     }
                 });
             } else {

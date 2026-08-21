@@ -1000,7 +1000,19 @@ function startLocationWatch() {
   if (locWatchId != null || !navigator.geolocation) return;
   locWatchId = navigator.geolocation.watchPosition(
     (pos) => { lastFix = pos; updateLocBtn(); },
-    (err) => { dbg('[LOC] ' + err.message); lastFix = null; updateLocBtn(); },
+    (err) => {
+      dbg('[LOC] ' + err.message);
+      lastFix = null;
+      // A refusal never resolves on its own, and a pin stuck on "…" reads as a
+      // weak signal rather than a denial. Switch the toggle back off and say so.
+      if (err.code === 1) {
+        shareLocation = false;
+        localStorage.setItem('handsfree_share_location', '0');
+        stopLocationWatch();
+        add('error', 'Location permission was denied, so sharing is off.');
+      }
+      updateLocBtn();
+    },
     { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
   );
 }
