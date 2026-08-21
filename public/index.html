@@ -918,9 +918,10 @@ function connect() {
       add('claude', m.text);
       lastReply = m.text;
       if (agentBusy) {
-        // If server sent audio, play it; otherwise fall back to browser TTS
-        if (m.audio) {
-          playServerAudio(m.audio, m.text);
+        // streaming: the audio follows as separate 'say' chunks, so don't
+        // fall back to device TTS just because this message carries no audio
+        if (m.audio || m.streaming) {
+          if (m.audio) playServerAudio(m.audio, m.text);
           // Mark as spoken so speak() doesn't repeat it
           const clean = tts.speakable(m.text);
           const sentences = clean.split(/(?<=[.!?])\s+/);
@@ -929,6 +930,18 @@ function connect() {
           speakBrief(m.text);
         }
       }
+    }
+    else if (m.type === 'say') {
+      // One rendered piece of the reply above. Chunks of a reply the user has
+      // already barged in on are dropped rather than resuming after the stop.
+      if (m.gen != null) {
+        // The counter lives in the server process, so a restart rewinds it.
+        // Without this the phone would silently drop every chunk forever.
+        if (m.gen < tts.currentGen) tts.droppedGen = 0;
+        if (m.gen <= tts.droppedGen) return;
+        tts.currentGen = m.gen;
+      }
+      if (agentBusy) tts.enqueue({ audio: m.audio, text: m.text, key: m.gen + ':' + m.seq });
     }
     else if (m.type === 'error') { agentBusy = false; hideWorking(); setState('idle'); micBtn.classList.remove('busy'); add('error', m.text); speak('Something went wrong: ' + m.text); }
     else if (m.type === 'result') {
@@ -1265,6 +1278,8 @@ const tts = {
   speaking: false,
   currentAudio: null,
   playGen: 0,       // bumped by stop() to cancel any playback waiting on the mic
+  currentGen: 0,    // server's id for the reply being spoken now
+  droppedGen: 0,    // replies at or below this were barged in on; ignore their chunks
   unlocked: false,
   lastQueued: '',
   spokenSentences: new Set(),
@@ -1314,6 +1329,9 @@ const tts = {
     this.speaking = false;
     this.ducked = false;
     this.playGen++; // cancel any pending mic-first playback
+    // Chunks of this reply are still being rendered server-side; refuse them
+    // so a barge-in isn't followed by the rest of the interrupted sentence.
+    this.droppedGen = this.currentGen;
   },
 
   // Duck (or restore) playback volume while we suspect the user is talking.
@@ -1333,8 +1351,9 @@ const tts = {
     if (!item.text && !item.audio) return;
     if (!speakReplies) return;  // answer to a typed message: stays on screen
 
-    // Skip duplicates
-    const key = item.audio ? 'audio:' + item.text : item.text;
+    // Skip duplicates. Streamed chunks carry their own key so that a reply
+    // which legitimately repeats a sentence still speaks it twice.
+    const key = item.key || (item.audio ? 'audio:' + item.text : item.text);
     if (key === this.lastQueued) {
       console.log('TTS skipping duplicate:', item.text?.slice(0, 50));
       return;

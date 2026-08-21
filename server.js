@@ -129,6 +129,23 @@ function currentVoice() {
   catch { return DEFAULT_VOICE; }
 }
 
+// Split a reply into speakable chunks. Synthesis cost scales with length, so
+// rendering a whole paragraph before sending anything meant up to 14s of
+// silence on Kokoro. Chunking lets playback start after the first sentence
+// while the rest renders behind it. The first chunk is kept short on purpose:
+// it is the only one the user actually waits on.
+function chunkForSpeech(text, firstLimit = 90, restLimit = 240) {
+  const chunks = [];
+  let cur = '';
+  for (const s of text.split(/(?<=[.!?])\s+/)) {
+    const limit = chunks.length === 0 ? firstLimit : restLimit;
+    if (cur && (cur + ' ' + s).length > limit) { chunks.push(cur); cur = s; }
+    else cur = cur ? cur + ' ' + s : s;
+  }
+  if (cur) chunks.push(cur);
+  return chunks;
+}
+
 // Prepend a short silence to a PCM WAV. Piper's audio starts speaking at
 // sample zero, and phones swallow the first fraction of a second while the
 // output path wakes up — users heard replies with the first words missing.
@@ -553,6 +570,7 @@ const AGENTD_URL = process.env.AGENTD_URL || 'ws://127.0.0.1:9878';
 let agentWs = null;
 const agentOutbox = []; // messages queued while agentd is down/restarting
 let agentBusy = false;  // best-effort: a turn is in flight
+let speechGen = 0;      // bumped per spoken reply, so barge-in can drop stragglers
 const conns = new Map(); // connId -> per-phone-connection state
 let nextConnId = 1;
 let lastUserKey = null; // dedup identical user messages from parallel clients
@@ -611,10 +629,19 @@ async function handleAgentEvent(evt) {
     const conn = conns.get(evt.connId);
     if (conn && conn.send) conn.send({ type: 'dropped', text: evt.text, busy: !!evt.busy });
   } else if (evt.type === 'assistant') {
-    console.log('Synthesizing speech for:', evt.text.slice(0, 50));
-    const tts = await synthesizeSpeech(evt.text);
-    console.log('TTS result:', tts ? `got audio ${tts.audio.length} bytes` : 'no audio (client falls back)');
-    broadcast(tts ? { type: 'assistant', text: evt.text, audio: tts.audio } : { type: 'assistant', text: evt.text });
+    // Text first so the bubble appears immediately, then audio chunk by chunk.
+    // `gen` lets the phone discard the rest of a reply it barged in on.
+    const gen = ++speechGen;
+    broadcast({ type: 'assistant', text: evt.text, streaming: true });
+    const chunks = chunkForSpeech(evt.text);
+    console.log(`Synthesizing ${chunks.length} chunk(s) for:`, evt.text.slice(0, 50));
+    for (let i = 0; i < chunks.length; i++) {
+      const started = Date.now();
+      const tts = await synthesizeSpeech(chunks[i]);
+      console.log(`  chunk ${i + 1}/${chunks.length} ${Date.now() - started}ms`,
+        tts ? `${tts.audio.length} bytes` : 'no audio (client falls back)');
+      broadcast({ type: 'say', gen, seq: i, text: chunks[i], audio: tts ? tts.audio : undefined });
+    }
   } else if (evt.type === 'tool') {
     broadcast({ type: 'tool', text: evt.text });
   } else if (evt.type === 'status') {
