@@ -662,10 +662,10 @@ async function handleAgentEvent(evt) {
     const conn = conns.get(evt.connId);
     if (conn && conn.send) conn.send({ type: 'dropped', text: evt.text, busy: !!evt.busy });
   } else if (evt.type === 'assistant') {
-    // Text first so the bubble appears immediately, then audio chunk by chunk.
+    // The bubble waits for the first chunk to render, so text and voice land
+    // together — showing the text early only made the silence conspicuous.
     // `gen` lets the phone discard the rest of a reply it barged in on.
     const gen = ++speechGen;
-    broadcast({ type: 'assistant', text: evt.text, streaming: true });
     const chunks = chunkForSpeech(evt.text);
     console.log(`Synthesizing ${chunks.length} chunk(s) for:`, evt.text.slice(0, 50));
     for (let i = 0; i < chunks.length; i++) {
@@ -673,6 +673,7 @@ async function handleAgentEvent(evt) {
       const tts = await synthesizeSpeech(chunks[i], i === 0);
       console.log(`  chunk ${i + 1}/${chunks.length} ${Date.now() - started}ms`,
         tts ? `${tts.audio.length} bytes` : 'no audio (client falls back)');
+      if (i === 0) broadcast({ type: 'assistant', text: evt.text, streaming: true });
       broadcast({ type: 'say', gen, seq: i, text: chunks[i], audio: tts ? tts.audio : undefined });
     }
   } else if (evt.type === 'tool') {
