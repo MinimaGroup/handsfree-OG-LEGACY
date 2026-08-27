@@ -100,6 +100,7 @@
   .session-btn.new { border-color: var(--ok); color: var(--ok); }
   .session-btn .delete { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); color: var(--err); font-size: 24px; padding: 12px; min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center; }
   .session-btn .dir { color: var(--dim); font-size: 11px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-btn .live { color: var(--accent); font-size: 11px; margin-left: 6px; }
   #sessionPicker input { width: 100%; background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 12px 16px; font-size: 16px; margin-bottom: 8px; outline: none; }
   #sessionPicker input:focus { border-color: var(--accent); }
   .host-btn { width: 100%; text-align: left; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; margin-bottom: 8px; cursor: pointer; }
@@ -478,7 +479,10 @@ function showSessionPicker(sessions) {
     // Terminal sessions (started on the desktop) get no delete button:
     // removing them here would mean deleting the desktop transcript.
     const del = s.origin === 'terminal' ? '' : `<span class="delete" data-id="${s.id}">×</span>`;
-    btn.innerHTML = `${del}<div class="time">${time}</div>${title}<div class="preview">${s.preview || '(no preview)'}</div>${dir}`;
+    // Open right now in a desktop terminal. Taking it over closes that process,
+    // so the badge doubles as a warning that something is about to be shut.
+    const live = s.liveOnDesktop ? '<span class="live">● on desktop</span>' : '';
+    btn.innerHTML = `${del}<div class="time">${time}${live}</div>${title}<div class="preview">${s.preview || '(no preview)'}</div>${dir}`;
     btn.onclick = (e) => {
       if (e.target.classList.contains('delete')) {
         e.stopPropagation();
@@ -486,7 +490,7 @@ function showSessionPicker(sessions) {
         deleteSession(id);
         return;
       }
-      selectSession(s.id);
+      selectSession(s.id, null, true);
     };
     sessionList.appendChild(btn);
   }
@@ -515,7 +519,11 @@ function deleteSession(id) {
 
 let lastSelectedSession = null; // Prevent duplicate selections
 
-function selectSession(id, cwd) {
+// takeover=true means the user deliberately tapped this session in the picker.
+// Auto-resume on load and the re-send after a reconnect must NOT set it: the
+// server closes the session's desktop terminal on takeover, and a reconnect
+// is not a decision to shut anything down.
+function selectSession(id, cwd, takeover) {
   // Debug: send to server
   if (ws && ws.readyState === 1) {
     ws.send(JSON.stringify({ type: 'debug', msg: 'selectSession called: id=' + id + ' lastSelected=' + lastSelectedSession + ' children=' + log.children.length }));
@@ -552,7 +560,7 @@ function selectSession(id, cwd) {
 
   if (ws && ws.readyState === 1) {
     console.log('Sending session selection to server:', id, 'cwd:', currentCwd);
-    ws.send(JSON.stringify({ type: 'session', id, cwd: currentCwd }));
+    ws.send(JSON.stringify({ type: 'session', id, cwd: currentCwd, takeover: !!takeover }));
   } else {
     console.log('WebSocket not ready, cannot send session:', ws?.readyState);
   }

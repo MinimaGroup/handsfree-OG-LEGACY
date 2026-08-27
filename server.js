@@ -424,6 +424,72 @@ function scanTerminalSessions(knownIds) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Live desktop sessions. The CLI writes ~/.claude/sessions/<pid>.json for
+// every running session: {pid, sessionId, cwd, procStart, kind, entrypoint}.
+// That file is the only thing tying a session id to a live process — the CLI
+// appends to its transcript and closes it (so no fd to scan) and its argv is
+// a bare "claude". Drives the picker's "on desktop" flag and the takeover
+// close below. procStart is /proc/<pid>/stat's starttime, so a recycled pid
+// can never be mistaken for a session that is still alive.
+// ---------------------------------------------------------------------------
+
+// Field 22 of /proc/<pid>/stat. comm (field 2) can contain spaces and parens,
+// so count fields after the LAST ')' — that remainder starts at field 3.
+function procStartTicks(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] || null;
+  } catch { return null; }
+}
+
+let cliScanCache = { at: 0, data: new Map() };
+function liveDesktopSessions() {
+  if (Date.now() - cliScanCache.at < 3000) return cliScanCache.data;
+  const out = new Map();
+  const dir = path.join(homedir(), '.claude', 'sessions');
+  let files = [];
+  try { files = readdirSync(dir); } catch {}
+  for (const f of files) {
+    if (!f.endsWith('.json')) continue;
+    let info;
+    try { info = JSON.parse(readFileSync(path.join(dir, f), 'utf8')); } catch { continue; }
+    if (!info || !info.sessionId || !info.pid) continue;
+    // Only interactive CLI sessions count as "on the desktop". agentd's own
+    // turns are SDK sessions — flagging or killing those would shoot the
+    // voice agent mid-turn.
+    if (info.kind !== 'interactive' || info.entrypoint !== 'cli') continue;
+    if (info.pid === process.pid) continue;
+    const started = procStartTicks(info.pid);
+    if (!started) continue;                                    // process gone
+    if (info.procStart && String(info.procStart) !== started) continue; // pid reused
+    out.set(info.sessionId, { pid: info.pid, cwd: info.cwd || null, procStart: started });
+  }
+  cliScanCache = { at: Date.now(), data: out };
+  return out;
+}
+
+// Taking a session over from the phone closes its desktop process. Both would
+// otherwise hold the same conversation in memory and append to one transcript,
+// branching its parentUuid chain, and both could edit the same repo with no
+// lock. SIGTERM lets the CLI flush; SIGKILL only if it ignores that.
+function closeDesktopSession(sessionId) {
+  const entry = liveDesktopSessions().get(sessionId);
+  if (!entry) return null;
+  let agentdPid = 0;
+  try { agentdPid = Number(readFileSync(path.join(__dirname, '.agentd.pid'), 'utf8').trim()) || 0; } catch {}
+  if (entry.pid === process.pid || entry.pid === agentdPid) return null;
+  try { process.kill(entry.pid, 'SIGTERM'); } catch { return null; }
+  const t = setTimeout(() => {
+    if (procStartTicks(entry.pid) === entry.procStart) {
+      try { process.kill(entry.pid, 'SIGKILL'); } catch {}
+    }
+  }, 2000);
+  if (t.unref) t.unref();
+  cliScanCache.at = 0; // next scan is fresh, so the badge clears
+  return entry.pid;
+}
+
 // Registry sessions (voice) merged with recent terminal sessions, newest
 // first. The disk scan is cached briefly; the registry is always read fresh
 // so titling/model updates from agentd show up immediately.
@@ -435,7 +501,14 @@ function listAllSessions() {
     termScanCache = { at: Date.now(), data: scanTerminalSessions(knownIds) };
   }
   const terminal = termScanCache.data.filter(s => !knownIds.has(s.id));
-  return [...registry, ...terminal].sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
+  // A registry (voice) session can have a live desktop process too — that IS
+  // the two-writer case — so flag both lists, not just terminal-origin ones.
+  const live = liveDesktopSessions();
+  return [...registry, ...terminal]
+    .map(s => live.has(s.id)
+      ? { ...s, liveOnDesktop: true, desktopPid: live.get(s.id).pid }
+      : s)
+    .sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
 }
 
 // Load conversation history from SDK session file. Includes tool-use entries
@@ -792,6 +865,18 @@ wss.on('connection', (ws, req) => {
           conn.cwd = entry.cwd || null;
           conn.model = entry.model || null;
           console.log(`Terminal takeover: ${conn.sessionId} cwd=${conn.cwd} model=${conn.model}`);
+        }
+        // Close the desktop process first, if this session has one, so the
+        // phone becomes the only writer. Do it before the first turn: two
+        // agents resuming one session id append to the same transcript.
+        // Only on a deliberate takeover — the client also re-sends its
+        // selection on every reconnect, and killing a terminal for that
+        // closed a live desktop session on 2026-08-27.
+        const closedPid = msg.takeover ? closeDesktopSession(conn.sessionId) : null;
+        if (closedPid) {
+          console.log(`Closed desktop session pid=${closedPid} on takeover of ${conn.sessionId}`);
+          send({ type: 'status', text: `Closed the desktop terminal for this session (pid ${closedPid}).` });
+          broadcast({ type: 'sessionsUpdated', sessions: listAllSessions() });
         }
       }
       if (!conn.sessionId && msg.cwd) {
