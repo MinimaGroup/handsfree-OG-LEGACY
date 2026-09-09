@@ -38,6 +38,7 @@ const WORKDIR = path.resolve(process.argv[2] || process.env.WORKDIR || homedir()
 // Session registry lives in a hidden per-user directory (like Claude's own
 // ~/.claude) rather than inside the checkout; migrate the old in-repo file.
 const DATA_DIR = path.join(homedir(), '.handsfree');
+const SECRETS_DIR = path.join(homedir(), '.secrets');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 try {
   mkdirSync(DATA_DIR, { recursive: true });
@@ -111,13 +112,13 @@ function setSessionModel(id, model) {
 }
 
 // ---------------------------------------------------------------------------
-// Linear: personal API key (from ~/.handsfree/linear.json) unlocks the
+// Linear: personal API key (from ~/.secrets/linear.json) unlocks the
 // official Linear MCP server in every session, whatever its cwd. Read per
 // turn so rotating the key never needs a restart; absent file = no Linear.
 // ---------------------------------------------------------------------------
 function extraMcpServers() {
   try {
-    const { api_key } = JSON.parse(readFileSync(path.join(DATA_DIR, 'linear.json'), 'utf8'));
+    const { api_key } = JSON.parse(readFileSync(path.join(SECRETS_DIR, 'linear.json'), 'utf8'));
     if (!api_key) return {};
     return {
       linear: {
