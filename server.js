@@ -949,8 +949,8 @@ wss.on('connection', (ws, req) => {
       // Log VAD debug info for analyzing false triggers
       console.log(`[VAD] energy=${msg.energy.toFixed(4)} max=${msg.maxSample.toFixed(4)} samples=${msg.samples} playback=${msg.duringPlayback}`);
     } else if (msg.type === 'vad_rejected') {
-      // Log when VAD rejected audio as too quiet
-      console.log(`[VAD REJECTED] energy=${msg.energy.toFixed(4)} threshold=${msg.threshold} playback=${msg.duringPlayback}`);
+      // Log when VAD rejected audio as too quiet or too flat to be speech
+      console.log(`[VAD REJECTED] ${msg.why || 'too quiet'} energy=${msg.energy.toFixed(4)}/${Number(msg.threshold).toFixed(4)} peak=${msg.maxSample !== undefined ? msg.maxSample.toFixed(4) : 'n/a'}/${msg.peakThreshold !== undefined ? msg.peakThreshold.toFixed(3) : 'n/a'} sens=${msg.sensitivity ?? 'n/a'} playback=${msg.duringPlayback}`);
     } else if (msg.type === 'barge_in') {
       // Log when barge-in is triggered
       console.log(`[BARGE-IN] energy=${msg.energy.toFixed(4)} playback=${msg.duringPlayback}${msg.early ? ' early' : ''}`);
@@ -972,9 +972,13 @@ wss.on('connection', (ws, req) => {
         energy = Math.sqrt(energy / numSamples);
         console.log(`[AUDIO] energy=${energy.toFixed(4)} max=${maxSample.toFixed(4)} samples=${numSamples} size=${audioBuffer.length}`);
 
-        // Reject silent audio on server side as backup
-        if (energy < 0.005) {
-          console.log('[AUDIO] Rejecting silent audio (energy < 0.005)');
+        // Backstop only. The real decision is the client's sensitivity slider;
+        // this just drops captures too flat for any setting to have wanted. The
+        // quietest genuine utterance on record peaked at 0.102, so 0.05 leaves
+        // that plenty of room while still catching dead air, which Whisper
+        // answers with invented sentences rather than silence.
+        if (energy < 0.005 || maxSample < 0.05) {
+          console.log(`[AUDIO] Rejecting non-speech audio (energy=${energy.toFixed(4)} peak=${maxSample.toFixed(4)})`);
           send({ type: 'transcription', text: '' });
           return;
         }

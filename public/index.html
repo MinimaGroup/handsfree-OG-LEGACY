@@ -120,6 +120,7 @@
 <header>
   <div id="dot"></div>
   <div id="workdir">connecting…</div>
+  <button id="settingsBtn" title="Settings" style="background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:13px;">⚙</button>
   <button id="locBtn" title="Location off" style="background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:13px;opacity:0.45;">📍</button>
   <a id="apkBtn" href="handsfree.apk" download style="display:none;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:13px;text-decoration:none;">📱 APK</a>
 </header>
@@ -147,6 +148,32 @@
   <div id="sessionList"></div>
 </div>
 <div id="log" style="display:none;"></div>
+
+<!-- Settings overlay. Deliberately an overlay rather than a nav page so it can
+     be opened and dismissed mid-conversation without leaving the chat, and the
+     presets are big tap targets because the usual time to reach for this is
+     while driving. -->
+<div id="settingsOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:50;">
+  <div id="settingsPanel" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(380px,92vw);background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px;box-shadow:0 12px 40px rgba(0,0,0,0.5);">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <div style="font-size:16px;">Settings</div>
+      <button id="settingsClose" style="background:none;border:none;color:var(--dim);font-size:22px;line-height:1;padding:0 4px;">×</button>
+    </div>
+
+    <div style="color:var(--text);font-size:14px;margin-bottom:4px;">Microphone sensitivity</div>
+    <div style="color:var(--dim);font-size:12px;margin-bottom:10px;">Lower it where there is background noise. Too high and road noise interrupts and gets transcribed as nonsense; too low and quiet speech is dropped.</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+      <input id="micSens" type="range" min="0" max="100" step="5" style="flex:1;accent-color:var(--accent);">
+      <span id="micSensVal" style="min-width:26px;text-align:right;font-variant-numeric:tabular-nums;color:var(--text);"></span>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:6px;">
+      <button class="sens-preset" data-sens="50" style="flex:1;padding:12px 8px;font-size:14px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:10px;">Desk</button>
+      <button class="sens-preset" data-sens="20" style="flex:1;padding:12px 8px;font-size:14px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:10px;">Noisy room</button>
+      <button class="sens-preset" data-sens="10" style="flex:1;padding:12px 8px;font-size:14px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:10px;">Car</button>
+    </div>
+    <div id="micSensDetail" style="color:var(--dim);font-size:11px;font-variant-numeric:tabular-nums;"></div>
+  </div>
+</div>
 
 <footer>
   <div id="controls">
@@ -986,6 +1013,46 @@ function connect() {
 startup();
 
 
+// ---------------- Microphone gates ----------------
+// A capture has to clear both an RMS gate and a peak gate to be submitted.
+// Why this is a slider and not a constant: in a moving car, road noise gets
+// captured as a long low-level stretch that Whisper invents fluent sentences
+// out of (it exposes no confidence score, so we cannot ask it how sure it is).
+// Checked against 783 real transcripts in .server.log on 2026-10-12, no fixed
+// amplitude gate separates that noise from genuine speech. In-car noise sat at
+// RMS 0.014-0.024 / peak 0.22-0.29, but quiet desk dictation lands in exactly
+// the same place: 79 real long utterances had peak below 0.40, the lowest
+// around 0.10. Duration does not break the tie either, real dictation runs
+// 6-57s at those same levels. A gate strict enough for the car silently drops
+// about a third of normal speech, so it has to be a setting the speaker
+// chooses, not a default. 50 reproduces the long-standing behaviour and is
+// safe at a desk; around 10-20 is the car setting and will cost some quiet
+// utterances, which is the unavoidable trade, not a bug.
+let micSensitivity = parseInt(localStorage.getItem('handsfree_mic_sensitivity') ?? '50', 10);
+const MIC_BASE_RMS = 0.010;
+const MIC_BASE_PEAK = 0.08;
+const MIC_BASE_FRAME_PLAYBACK = 0.03;   // gate to interrupt speech (barge-in)
+const MIC_BASE_FRAME_IDLE = 0.01;       // gate to duck and show the bubble
+function micSensFactor() {
+  // Every 20 points of sensitivity doubles or halves the gates. 50 is the
+  // long-standing behaviour, so the default changes nothing.
+  return Math.pow(2, (50 - micSensitivity) / 20);
+}
+function micGates(duringPlayback) {
+  const factor = micSensFactor() * (duringPlayback ? 1.5 : 1);
+  return { rms: MIC_BASE_RMS * factor, peak: Math.min(0.9, MIC_BASE_PEAK * factor) };
+}
+// Per-frame gate for barge-in and ducking. Scaled by the square root of the
+// factor rather than the factor itself: frame energy inside a loud syllable is
+// much closer to the noise floor than whole-utterance peak is, so the full
+// scaling would stop genuine interruptions from registering. Measured road
+// noise reached frame energies of 0.038 to 0.040 while interrupting playback,
+// which the car preset clears with room to spare.
+function micFrameGate(speaking) {
+  const base = speaking ? MIC_BASE_FRAME_PLAYBACK : MIC_BASE_FRAME_IDLE;
+  return base * Math.sqrt(micSensFactor());
+}
+
 // ---------------- Location sharing ----------------
 // Off until switched on, and remembered. While on, the newest GPS fix rides
 // along with each message so the agent knows where the phone is; it is never
@@ -1159,8 +1226,11 @@ async function doInitVAD() {
         let e = 0;
         for (let i = 0; i < frame.length; i++) e += frame[i] * frame[i];
         e = Math.sqrt(e / frame.length);
-        // Match onSpeechEnd's energy gates: stricter during playback.
-        if (probs.isSpeech > 0.7 && e > (tts.speaking ? 0.03 : 0.01)) {
+        // Scaled by the sensitivity setting, so lowering it in the car stops
+        // road noise from interrupting playback as well as stopping it from
+        // being submitted. Silero's own speech probability is not enough on its
+        // own here; road noise clears 0.7 regularly.
+        if (probs.isSpeech > 0.7 && e > micFrameGate(tts.speaking)) {
           bargeFrames++;
           if (bargeFrames === 2) {
             if (tts.speaking) tts.duck(true);
@@ -1203,13 +1273,15 @@ async function doInitVAD() {
           }));
         }
 
-        // Use higher threshold during playback to prevent false barge-ins
-        const threshold = duringPlayback ? 0.03 : 0.01;
-        if (energy < threshold) {
-          console.log('Audio too quiet, ignoring (threshold:', threshold, ') energy:', energy.toFixed(4));
+        // Both gates must pass. Gates are stricter during playback so TTS bleed
+        // doesn't submit itself back as a message.
+        const gates = micGates(duringPlayback);
+        if (energy < gates.rms || maxSample < gates.peak) {
+          const why = energy < gates.rms ? 'too quiet' : 'no speech peaks';
+          console.log('Audio rejected (' + why + '), energy:', energy.toFixed(4), 'of', gates.rms.toFixed(4), 'peak:', maxSample.toFixed(4), 'of', gates.peak.toFixed(4));
           // Send rejection to server for debugging
           if (ws && ws.readyState === 1) {
-            ws.send(JSON.stringify({ type: 'vad_rejected', energy: energy, threshold: threshold, duringPlayback: duringPlayback }));
+            ws.send(JSON.stringify({ type: 'vad_rejected', energy: energy, threshold: gates.rms, maxSample: maxSample, peakThreshold: gates.peak, why: why, sensitivity: micSensitivity, duringPlayback: duringPlayback }));
           }
           tts.duck(false); // false alarm: restore full playback volume
           if (interimEl) { interimEl.remove(); interimEl = null; }
@@ -1557,18 +1629,35 @@ const tts = {
   speakBrief(text) {
     const clean = this.speakable(text);
     if (!clean) return;
-    const firstSentence = clean.split(/(?<=[.!?])\s+/)[0].slice(0, 180);
+    const whole = clean.split(/(?<=[.!?])\s+/)[0];
+    const firstSentence = whole.slice(0, 180);
+    // Register both forms. speakFull later sees the untruncated sentence, so
+    // registering only the clipped one let a long opening sentence through to
+    // be spoken a second time.
     this.spokenSentences.add(firstSentence);
+    this.spokenSentences.add(whole);
     this.enqueue({ text: firstSentence });
   },
 
-  // Speak full text, skipping already-spoken sentences
+  // Speak full text, skipping already-spoken sentences.
+  // Split first, then drop whole sentences to stay under the cap. Truncating
+  // the text to 2000 characters *before* splitting left a half sentence at the
+  // cut, which matched nothing in spokenSentences and so was read out again by
+  // the device voice once the server voice had already finished the reply.
+  // Replies under the cap deduplicated correctly, which is why this only ever
+  // showed up on long answers.
   speakFull(text) {
-    const clean = this.speakable(text).slice(0, 2000);
-    const sentences = clean.split(/(?<=[.!?])\s+/);
-    const newSentences = sentences.filter(s => !this.spokenSentences.has(s));
-    if (newSentences.length > 0) {
-      this.enqueue({ text: newSentences.join(' ') });
+    const sentences = this.speakable(text).split(/(?<=[.!?])\s+/);
+    const fresh = [];
+    let budget = 2000;
+    for (const s of sentences) {
+      if (this.spokenSentences.has(s)) continue;
+      if (s.length > budget) break;
+      budget -= s.length + 1;
+      fresh.push(s);
+    }
+    if (fresh.length > 0) {
+      this.enqueue({ text: fresh.join(' ') });
     }
     this.spokenSentences.clear();
   },
@@ -1602,6 +1691,48 @@ let lastReply = '';
 // Legacy wrappers - all TTS now goes through unified tts object
 function speak(text) { tts.speakFull(text); }
 function speakBrief(text) { tts.speakBrief(text); }
+
+// ---------------- Settings panel ----------------
+const micSensEl = document.getElementById('micSens');
+const settingsOverlay = document.getElementById('settingsOverlay');
+
+function renderMicSens() {
+  const g = micGates(false);
+  document.getElementById('micSensVal').textContent = micSensitivity;
+  document.getElementById('micSensDetail').textContent =
+    'submit above RMS ' + g.rms.toFixed(4) + ' and peak ' + g.peak.toFixed(3)
+    + ' · interrupt above ' + micFrameGate(true).toFixed(4);
+  micSensEl.value = micSensitivity;
+  for (const b of document.querySelectorAll('.sens-preset')) {
+    const on = parseInt(b.dataset.sens, 10) === micSensitivity;
+    b.style.borderColor = on ? 'var(--accent)' : 'var(--border)';
+    b.style.color = on ? 'var(--accent)' : 'var(--text)';
+  }
+}
+
+function setMicSens(v, source) {
+  micSensitivity = Math.max(0, Math.min(100, v));
+  localStorage.setItem('handsfree_mic_sensitivity', String(micSensitivity));
+  renderMicSens();
+  const g = micGates(false);
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'debug', msg: '[MICSENS] ' + source + ' sensitivity=' + micSensitivity
+      + ' rms=' + g.rms.toFixed(4) + ' peak=' + g.peak.toFixed(3) + ' frame=' + micFrameGate(true).toFixed(4) }));
+  }
+}
+
+micSensEl.oninput = () => setMicSens(parseInt(micSensEl.value, 10), 'slider');
+for (const b of document.querySelectorAll('.sens-preset')) {
+  b.onclick = () => setMicSens(parseInt(b.dataset.sens, 10), 'preset:' + b.textContent.trim());
+}
+
+function openSettings() { renderMicSens(); settingsOverlay.style.display = 'block'; }
+function closeSettings() { settingsOverlay.style.display = 'none'; }
+document.getElementById('settingsBtn').onclick = openSettings;
+document.getElementById('settingsClose').onclick = closeSettings;
+// Tap the dimmed backdrop to dismiss, but not taps inside the panel itself.
+settingsOverlay.onclick = (e) => { if (e.target === settingsOverlay) closeSettings(); };
+renderMicSens();
 
 document.getElementById('locBtn').onclick = () => {
   shareLocation = !shareLocation;
